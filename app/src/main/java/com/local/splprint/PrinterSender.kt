@@ -9,6 +9,24 @@ object PrinterSender {
     private const val PORT = 9100
     private const val CONNECT_TIMEOUT_MS = 8000
     private const val READ_TIMEOUT_MS = 15000
+    private const val CHECK_TIMEOUT_MS = 3000
+
+    /**
+     * Quick, non-destructive reachability test: opens a TCP connection to
+     * [ip]:9100 and immediately closes it without sending any data. Returns
+     * true if the printer accepted the connection within [CHECK_TIMEOUT_MS].
+     * Must be called from a background thread (blocking I/O).
+     */
+    fun checkConnection(ip: String): Boolean {
+        return try {
+            Socket().use { socket ->
+                socket.connect(InetSocketAddress(ip, PORT), CHECK_TIMEOUT_MS)
+            }
+            true
+        } catch (e: IOException) {
+            false
+        }
+    }
 
     /**
      * Opens a raw TCP socket to [ip]:9100, writes [jobBytes], flushes, and

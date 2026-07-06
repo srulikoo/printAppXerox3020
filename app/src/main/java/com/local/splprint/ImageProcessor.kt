@@ -13,27 +13,23 @@ enum class Orientation { PORTRAIT, LANDSCAPE }
 object ImageProcessor {
 
     /**
-     * Renders [source] onto a page canvas of exactly [pageWidthPx] x [pageHeightPx],
-     * converts to grayscale, applies a threshold to produce pure black/white,
-     * and packs the result into a 1bpp row-major MSB-first bitmap
-     * (1 = black ink, 0 = white paper) as required by [QpdlEncoder.encode].
+     * Composes [source] onto a white page of exactly [pageWidthPx] x
+     * [pageHeightPx] using [scaleMode] and [orientation]. This is the exact
+     * layout logic used for both the on-screen preview and the actual print
+     * job, so what you see in the preview matches what gets printed.
      *
-     * @param threshold 0-255; pixels darker than this become black.
+     * For landscape, the image is composed into a swapped-dimension canvas
+     * and then the whole page is rotated 90 degrees to fit the physical
+     * (always-portrait) page size -- the printer itself is never told about
+     * orientation, only the content is rotated.
      */
-    fun renderToPackedBitmap(
+    fun composePage(
         source: Bitmap,
         pageWidthPx: Int,
         pageHeightPx: Int,
         scaleMode: ScaleMode,
-        threshold: Int = 150,
-        orientation: Orientation = Orientation.PORTRAIT
-    ): ByteArray {
-        // The printer's physical page is always pageWidthPx x pageHeightPx
-        // (portrait, matching the printer's exact band-width table). For
-        // landscape, we compose the image into a swapped-dimension canvas
-        // and then rotate the whole composed page 90 degrees to fit back
-        // into the physical portrait canvas -- the printer itself is never
-        // told about orientation, only the content is rotated.
+        orientation: Orientation
+    ): Bitmap {
         val composeW = if (orientation == Orientation.LANDSCAPE) pageHeightPx else pageWidthPx
         val composeH = if (orientation == Orientation.LANDSCAPE) pageWidthPx else pageHeightPx
 
@@ -65,10 +61,8 @@ object ImageProcessor {
         val paint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
         composeCanvas.drawBitmap(source, null, dstRect, paint)
 
-        // Rotate into the physical (portrait) page if landscape was requested.
-        val page: Bitmap
         if (orientation == Orientation.LANDSCAPE) {
-            page = Bitmap.createBitmap(pageWidthPx, pageHeightPx, Bitmap.Config.ARGB_8888)
+            val page = Bitmap.createBitmap(pageWidthPx, pageHeightPx, Bitmap.Config.ARGB_8888)
             val rotateCanvas = Canvas(page)
             rotateCanvas.drawColor(Color.WHITE)
             val matrix = Matrix()
@@ -76,11 +70,44 @@ object ImageProcessor {
             matrix.postTranslate(pageWidthPx.toFloat(), 0f)
             rotateCanvas.drawBitmap(composed, matrix, paint)
             composed.recycle()
-        } else {
-            page = composed
+            return page
         }
+        return composed
+    }
 
-        // 2. Grayscale + threshold -> pack into 1bpp MSB-first rows.
+    /**
+     * Applies grayscale + threshold to [page], returning a new black/white
+     * ARGB bitmap of the same size -- useful for an accurate on-screen
+     * preview of what will actually print.
+     */
+    fun applyThresholdPreview(page: Bitmap, threshold: Int): Bitmap {
+        val w = page.width
+        val h = page.height
+        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val row = IntArray(w)
+        for (y in 0 until h) {
+            page.getPixels(row, 0, w, 0, y, w, 1)
+            for (x in 0 until w) {
+                val p = row[x]
+                val r = (p shr 16) and 0xFF
+                val g = (p shr 8) and 0xFF
+                val b = p and 0xFF
+                val gray = (r * 299 + g * 587 + b * 114) / 1000
+                row[x] = if (gray < threshold) Color.BLACK else Color.WHITE
+            }
+            out.setPixels(row, 0, w, 0, y, w, 1)
+        }
+        return out
+    }
+
+    /**
+     * Converts an already-composed, page-sized ARGB bitmap into a 1bpp
+     * row-major MSB-first packed bitmap (1 = black ink, 0 = white paper),
+     * applying [threshold] as it packs.
+     */
+    fun packBitmap(page: Bitmap, threshold: Int): ByteArray {
+        val pageWidthPx = page.width
+        val pageHeightPx = page.height
         val lineBytes = (pageWidthPx + 7) / 8
         val packed = ByteArray(lineBytes * pageHeightPx)
         val row = IntArray(pageWidthPx)
@@ -95,7 +122,6 @@ object ImageProcessor {
                 val r = (p shr 16) and 0xFF
                 val g = (p shr 8) and 0xFF
                 val b = p and 0xFF
-                // Standard luma weighting.
                 val gray = (r * 299 + g * 587 + b * 114) / 1000
                 val isBlack = gray < threshold
                 if (isBlack) currentByte = currentByte or bitMask
@@ -111,7 +137,23 @@ object ImageProcessor {
                 packed[byteIndex] = currentByte.toByte()
             }
         }
+        return packed
+    }
 
+    /**
+     * Convenience one-shot used by the print pipeline: compose + threshold +
+     * pack in a single call.
+     */
+    fun renderToPackedBitmap(
+        source: Bitmap,
+        pageWidthPx: Int,
+        pageHeightPx: Int,
+        scaleMode: ScaleMode,
+        threshold: Int = 150,
+        orientation: Orientation = Orientation.PORTRAIT
+    ): ByteArray {
+        val page = composePage(source, pageWidthPx, pageHeightPx, scaleMode, orientation)
+        val packed = packBitmap(page, threshold)
         page.recycle()
         return packed
     }
