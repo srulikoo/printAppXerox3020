@@ -3,10 +3,12 @@ package com.local.splprint
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Rect
 
 enum class ScaleMode { FIT, FILL, STRETCH }
+enum class Orientation { PORTRAIT, LANDSCAPE }
 
 object ImageProcessor {
 
@@ -23,36 +25,60 @@ object ImageProcessor {
         pageWidthPx: Int,
         pageHeightPx: Int,
         scaleMode: ScaleMode,
-        threshold: Int = 150
+        threshold: Int = 150,
+        orientation: Orientation = Orientation.PORTRAIT
     ): ByteArray {
-        // 1. Compose the source image onto a white page-sized canvas per scaleMode.
-        val page = Bitmap.createBitmap(pageWidthPx, pageHeightPx, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(page)
-        canvas.drawColor(Color.WHITE)
+        // The printer's physical page is always pageWidthPx x pageHeightPx
+        // (portrait, matching the printer's exact band-width table). For
+        // landscape, we compose the image into a swapped-dimension canvas
+        // and then rotate the whole composed page 90 degrees to fit back
+        // into the physical portrait canvas -- the printer itself is never
+        // told about orientation, only the content is rotated.
+        val composeW = if (orientation == Orientation.LANDSCAPE) pageHeightPx else pageWidthPx
+        val composeH = if (orientation == Orientation.LANDSCAPE) pageWidthPx else pageHeightPx
+
+        val composed = Bitmap.createBitmap(composeW, composeH, Bitmap.Config.ARGB_8888)
+        val composeCanvas = Canvas(composed)
+        composeCanvas.drawColor(Color.WHITE)
 
         val srcW = source.width.toFloat()
         val srcH = source.height.toFloat()
         val dstRect: Rect = when (scaleMode) {
-            ScaleMode.STRETCH -> Rect(0, 0, pageWidthPx, pageHeightPx)
+            ScaleMode.STRETCH -> Rect(0, 0, composeW, composeH)
             ScaleMode.FIT -> {
-                val scale = minOf(pageWidthPx / srcW, pageHeightPx / srcH)
+                val scale = minOf(composeW / srcW, composeH / srcH)
                 val w = (srcW * scale).toInt()
                 val h = (srcH * scale).toInt()
-                val left = (pageWidthPx - w) / 2
-                val top = (pageHeightPx - h) / 2
+                val left = (composeW - w) / 2
+                val top = (composeH - h) / 2
                 Rect(left, top, left + w, top + h)
             }
             ScaleMode.FILL -> {
-                val scale = maxOf(pageWidthPx / srcW, pageHeightPx / srcH)
+                val scale = maxOf(composeW / srcW, composeH / srcH)
                 val w = (srcW * scale).toInt()
                 val h = (srcH * scale).toInt()
-                val left = (pageWidthPx - w) / 2
-                val top = (pageHeightPx - h) / 2
+                val left = (composeW - w) / 2
+                val top = (composeH - h) / 2
                 Rect(left, top, left + w, top + h)
             }
         }
         val paint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
-        canvas.drawBitmap(source, null, dstRect, paint)
+        composeCanvas.drawBitmap(source, null, dstRect, paint)
+
+        // Rotate into the physical (portrait) page if landscape was requested.
+        val page: Bitmap
+        if (orientation == Orientation.LANDSCAPE) {
+            page = Bitmap.createBitmap(pageWidthPx, pageHeightPx, Bitmap.Config.ARGB_8888)
+            val rotateCanvas = Canvas(page)
+            rotateCanvas.drawColor(Color.WHITE)
+            val matrix = Matrix()
+            matrix.postRotate(90f)
+            matrix.postTranslate(pageWidthPx.toFloat(), 0f)
+            rotateCanvas.drawBitmap(composed, matrix, paint)
+            composed.recycle()
+        } else {
+            page = composed
+        }
 
         // 2. Grayscale + threshold -> pack into 1bpp MSB-first rows.
         val lineBytes = (pageWidthPx + 7) / 8

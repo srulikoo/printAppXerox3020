@@ -29,11 +29,16 @@ object QpdlEncoder {
         paperName: String,
         copies: Int,
         userName: String,
-        jobName: String
+        jobName: String,
+        highRes: Boolean
     ): ByteArray
 
-    /** The exact pixel width the printer's engine expects for this paper type. */
-    external fun requiredWidthPx(paperName: String): Int
+    /**
+     * The exact pixel width the printer's engine expects for this paper type.
+     * @param highRes false = 600x600dpi (verified working baseline),
+     *                true = 1200x600dpi (sharper horizontal detail, larger job).
+     */
+    external fun requiredWidthPx(paperName: String, highRes: Boolean): Int
 
     /** The recommended pixel height for this paper type at 600dpi. */
     external fun requiredHeightPx(paperName: String): Int

@@ -52,34 +52,34 @@
 // column only (we don't support 1200dpi high-res mode).
 // Index = SpliX paper-type numeric code (see paperTypeCode() below).
 // ---------------------------------------------------------------------------
-struct BandWidthEntry { unsigned char paperType; unsigned long widthBytesStd; };
+struct BandWidthEntry { unsigned char paperType; unsigned long widthBytesStd; unsigned long widthBytesHigh; };
 static const BandWidthEntry k2020BandWidth[] = {
-    {0, 640},   // Letter
-    {1, 640},   // Legal
-    {2, 608},   // A4
-    {3, 544},   // Executive
-    {4, 800},   // Ledger
-    {5, 864},   // A3
-    {6, 288},   // Env10
-    {7, 288},   // Monarch
-    {8, 480},   // C5
-    {9, 320},   // DL
-    {10, 736},  // B4
-    {11, 544},  // B5
-    {12, 512},  // EnvISOB5
-    {14, 288},  // Postcard
-    {16, 416},  // A5
-    {17, 288},  // A6
-    {18, 384},  // B6
-    {23, 320},  // C6
-    {24, 640},  // Folio
-    {25, 256},  // EnvPersonal
-    {26, 288},  // Env9
-    {27, 224},  // IndexCard/3x5
-    {28, 640},  // Oficio
-    {30, 416},  // Statement
-    {34, 800},  // 8K
-    {35, 576},  // 16K
+    {0, 640, 1248},   // Letter
+    {1, 640, 1248},   // Legal
+    {2, 608, 1216},   // A4
+    {3, 544, 1056},   // Executive
+    {4, 800, 1600},   // Ledger
+    {5, 864, 1728},   // A3
+    {6, 288, 576},    // Env10
+    {7, 288, 544},    // Monarch
+    {8, 480, 928},    // C5
+    {9, 320, 608},    // DL
+    {10, 736, 1472},  // B4
+    {11, 544, 1056},  // B5
+    {12, 512, 992},   // EnvISOB5
+    {14, 288, 576},   // Postcard
+    {16, 416, 832},   // A5
+    {17, 288, 576},   // A6
+    {18, 384, 736},   // B6
+    {23, 320, 640},   // C6
+    {24, 640, 1248},  // Folio
+    {25, 256, 512},   // EnvPersonal
+    {26, 288, 544},   // Env9
+    {27, 224, 416},   // IndexCard/3x5
+    {28, 640, 1248},  // Oficio
+    {30, 416, 800},   // Statement
+    {34, 800, 1568},  // 8K
+    {35, 576, 1120},  // 16K
 };
 
 // SpliX printer.cpp paper-type numeric codes (subset we support / may extend).
@@ -95,10 +95,10 @@ static int paperTypeCode(const std::string& name) {
     return 2; // default A4
 }
 
-static unsigned long bandWidthBytesFor(int paperCode) {
+static unsigned long bandWidthBytesFor(int paperCode, bool highRes) {
     for (auto &e : k2020BandWidth)
-        if (e.paperType == paperCode) return e.widthBytesStd;
-    return 608; // fall back to A4
+        if (e.paperType == paperCode) return highRes ? e.widthBytesHigh : e.widthBytesStd;
+    return highRes ? 1216 : 608; // fall back to A4
 }
 
 // Physical page size in points (1/72 inch), same table SpliX PPDs use.
@@ -290,12 +290,13 @@ static unsigned char* buildTransposedInvertedBand(
 static std::vector<unsigned char> buildQpdlJob(
         const unsigned char* bitmap, unsigned long widthPx, unsigned long heightPx,
         const std::string& paperName, unsigned long copies, const std::string& userName,
-        const std::string& jobName) {
+        const std::string& jobName, bool highRes) {
 
-    const unsigned long resolution = 600;     // dpi, both axes
+    const unsigned long yResolution = 600;               // vertical dpi (fixed)
+    const unsigned long xResolution = highRes ? 1200 : 600; // horizontal dpi
     const unsigned long bandHeightPx = 128;   // fixed for 600dpi (SpliX QPDL BandSize)
     const int paperCode = paperTypeCode(paperName);
-    const unsigned long bandWidthBytes = bandWidthBytesFor(paperCode);
+    const unsigned long bandWidthBytes = bandWidthBytesFor(paperCode, highRes);
     const unsigned long lineBytes = (widthPx + 7) / 8;
     // Sanity: caller should render to exactly bandWidthBytes*8 px wide.
     const unsigned long widthBytes = std::min(lineBytes, bandWidthBytes);
@@ -329,7 +330,7 @@ static std::vector<unsigned char> buildQpdlJob(
     {
         unsigned char h[0x11];
         h[0x0] = 0;                          // page-start signature
-        h[0x1] = (unsigned char)(resolution / 100);  // Y resolution
+        h[0x1] = (unsigned char)(yResolution / 100);  // Y resolution
         h[0x2] = (unsigned char)((copies >> 8) & 0xFF);
         h[0x3] = (unsigned char)(copies & 0xFF);
         h[0x4] = (unsigned char)paperCode;
@@ -344,7 +345,7 @@ static std::vector<unsigned char> buildQpdlJob(
         h[0xD] = 0;                          // unknownByte2 ("always 0")
         h[0xE] = 3;                          // QPDL version
         h[0xF] = 1;                          // unknownByte3 = colorplanes (1 = mono)
-        h[0x10] = (unsigned char)(resolution / 100); // X resolution
+        h[0x10] = (unsigned char)(xResolution / 100); // X resolution
         job.bytes(h, sizeof(h));
     }
 
@@ -418,7 +419,8 @@ JNIEXPORT jbyteArray JNICALL
 Java_com_local_splprint_QpdlEncoder_encode(
         JNIEnv* env, jclass /*clazz*/,
         jbyteArray bitmap_, jint widthPx, jint heightPx,
-        jstring paperName_, jint copies, jstring userName_, jstring jobName_) {
+        jstring paperName_, jint copies, jstring userName_, jstring jobName_,
+        jboolean highRes) {
 
     jbyte* bitmapPtr = env->GetByteArrayElements(bitmap_, nullptr);
     const char* paperNameC = env->GetStringUTFChars(paperName_, nullptr);
@@ -429,7 +431,7 @@ Java_com_local_splprint_QpdlEncoder_encode(
             reinterpret_cast<const unsigned char*>(bitmapPtr),
             (unsigned long)widthPx, (unsigned long)heightPx,
             std::string(paperNameC), (unsigned long)copies,
-            std::string(userNameC), std::string(jobNameC));
+            std::string(userNameC), std::string(jobNameC), highRes == JNI_TRUE);
 
     env->ReleaseByteArrayElements(bitmap_, bitmapPtr, JNI_ABORT);
     env->ReleaseStringUTFChars(paperName_, paperNameC);
@@ -448,14 +450,16 @@ Java_com_local_splprint_QpdlEncoder_encode(
 extern "C"
 JNIEXPORT jint JNICALL
 Java_com_local_splprint_QpdlEncoder_requiredWidthPx(
-        JNIEnv* env, jclass /*clazz*/, jstring paperName_) {
+        JNIEnv* env, jclass /*clazz*/, jstring paperName_, jboolean highRes) {
     const char* paperNameC = env->GetStringUTFChars(paperName_, nullptr);
     int code = paperTypeCode(std::string(paperNameC));
     env->ReleaseStringUTFChars(paperName_, paperNameC);
-    return (jint)(bandWidthBytesFor(code) * 8);
+    return (jint)(bandWidthBytesFor(code, highRes == JNI_TRUE) * 8);
 }
 
-// Exposes the recommended pixel height for a given paper type at 600dpi.
+// Exposes the recommended pixel height for a given paper type. Height is
+// always at 600dpi (Y resolution is fixed regardless of highRes, which only
+// doubles X/horizontal density) so it does not depend on highRes.
 extern "C"
 JNIEXPORT jint JNICALL
 Java_com_local_splprint_QpdlEncoder_requiredHeightPx(

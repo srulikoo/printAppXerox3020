@@ -24,6 +24,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var ipInput: EditText
     private lateinit var previewImage: ImageView
     private lateinit var scaleModeGroup: RadioGroup
+    private lateinit var orientationGroup: RadioGroup
+    private lateinit var qualityGroup: RadioGroup
     private lateinit var thresholdSeekBar: SeekBar
     private lateinit var statusText: TextView
 
@@ -41,6 +43,8 @@ class MainActivity : AppCompatActivity() {
         ipInput = findViewById(R.id.ipInput)
         previewImage = findViewById(R.id.previewImage)
         scaleModeGroup = findViewById(R.id.scaleModeGroup)
+        orientationGroup = findViewById(R.id.orientationGroup)
+        qualityGroup = findViewById(R.id.qualityGroup)
         thresholdSeekBar = findViewById(R.id.thresholdSeekBar)
         statusText = findViewById(R.id.statusText)
 
@@ -68,6 +72,13 @@ class MainActivity : AppCompatActivity() {
         else -> ScaleMode.FIT
     }
 
+    private fun currentOrientation(): Orientation =
+        if (orientationGroup.checkedRadioButtonId == R.id.radioLandscape)
+            Orientation.LANDSCAPE else Orientation.PORTRAIT
+
+    private fun currentHighRes(): Boolean =
+        qualityGroup.checkedRadioButtonId == R.id.radioHigh
+
     private fun onPrintClicked() {
         val bitmap = selectedBitmap
         if (bitmap == null) {
@@ -81,6 +92,8 @@ class MainActivity : AppCompatActivity() {
         }
 
         val scaleMode = currentScaleMode()
+        val orientation = currentOrientation()
+        val highRes = currentHighRes()
         val threshold = thresholdSeekBar.progress
 
         statusText.text = "Preparing print job..."
@@ -89,14 +102,14 @@ class MainActivity : AppCompatActivity() {
             try {
                 val jobBytes = withContext(Dispatchers.Default) {
                     val paperName = "A4"
-                    val widthPx = QpdlEncoder.requiredWidthPx(paperName)
+                    val widthPx = QpdlEncoder.requiredWidthPx(paperName, highRes)
                     val heightPx = QpdlEncoder.requiredHeightPx(paperName)
                     val packed = ImageProcessor.renderToPackedBitmap(
-                        bitmap, widthPx, heightPx, scaleMode, threshold
+                        bitmap, widthPx, heightPx, scaleMode, threshold, orientation
                     )
                     QpdlEncoder.encode(
                         packed, widthPx, heightPx, paperName,
-                        1, "android", "coloring page"
+                        1, "android", "coloring page", highRes
                     )
                 }
 
