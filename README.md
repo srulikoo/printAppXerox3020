@@ -1,4 +1,5 @@
-# SPL Print — Xerox Phaser 3020 direct print app
+# PWP - Print From Phone (Xerox Phaser 3020 direct print app)
+
 [![Latest Release](https://img.shields.io/github/v/release/srulikoo/printAppXerox3020)](https://github.com/srulikoo/printAppXerox3020/releases/latest)
 
 Minimal, ad-free Android app that prints images and PDFs (e.g. coloring
