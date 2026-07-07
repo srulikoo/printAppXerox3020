@@ -158,6 +158,79 @@ object ImageProcessor {
      * (see MainActivity.updatePreview) so it never shows the physical-page
      * rotation, only the correctly-oriented content.
      */
+    /**
+     * Automatically computes a good black/white threshold (0-255) for
+     * [bitmap] using Otsu's method: it analyzes the image's own brightness
+     * histogram and picks the cutoff that best separates "ink" from
+     * "background" for that specific image, rather than using one fixed
+     * value for every document. Works on a downscaled copy for speed --
+     * exact accuracy at full resolution isn't needed for a threshold
+     * suggestion.
+     */
+    fun computeAutoThreshold(bitmap: Bitmap): Int {
+        // Downscale for speed; histogram shape is essentially unaffected.
+        val maxDim = 400
+        val scale = maxDim.toFloat() / maxOf(bitmap.width, bitmap.height)
+        val sample = if (scale < 1f) {
+            Bitmap.createScaledBitmap(
+                bitmap, (bitmap.width * scale).toInt().coerceAtLeast(1),
+                (bitmap.height * scale).toInt().coerceAtLeast(1), true
+            )
+        } else bitmap
+
+        val w = sample.width
+        val h = sample.height
+        val histogram = IntArray(256)
+        val row = IntArray(w)
+        for (y in 0 until h) {
+            sample.getPixels(row, 0, w, 0, y, w, 1)
+            for (x in 0 until w) {
+                val p = row[x]
+                val r = (p shr 16) and 0xFF
+                val g = (p shr 8) and 0xFF
+                val b = p and 0xFF
+                val gray = (r * 299 + g * 587 + b * 114) / 1000
+                histogram[gray]++
+            }
+        }
+        if (sample !== bitmap) sample.recycle()
+
+        val total = w * h
+        var sumAll = 0.0
+        for (i in 0 until 256) sumAll += i.toDouble() * histogram[i]
+
+        var sumB = 0.0
+        var weightBackground = 0
+        var maxVariance = 0.0
+        var bestThreshold = 150 // sane fallback if the image is degenerate (e.g. blank)
+
+        for (i in 0 until 256) {
+            weightBackground += histogram[i]
+            if (weightBackground == 0) continue
+            val weightForeground = total - weightBackground
+            if (weightForeground == 0) break
+
+            sumB += i.toDouble() * histogram[i]
+            val meanBackground = sumB / weightBackground
+            val meanForeground = (sumAll - sumB) / weightForeground
+            val diff = meanBackground - meanForeground
+            val betweenVariance = weightBackground.toDouble() * weightForeground.toDouble() * diff * diff
+
+            if (betweenVariance > maxVariance) {
+                maxVariance = betweenVariance
+                bestThreshold = i
+            }
+        }
+        return bestThreshold
+    }
+
+    /**
+     * Full print pipeline: compose in natural orientation, rotate to fit the
+     * printer's physical page if needed, threshold, and pack. Used only for
+     * the actual print job -- the preview uses composeContent() directly
+     * (see MainActivity.updatePreview) so it never shows the physical-page
+     * rotation, only the correctly-oriented content.
+     */
     fun renderToPackedBitmap(
         source: Bitmap,
         pageWidthPx: Int,

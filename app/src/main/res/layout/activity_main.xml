@@ -187,17 +187,32 @@
         </RadioGroup>
 
         <TextView
+            android:id="@+id/thresholdLabel"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="Black threshold"
+            android:text="Black threshold: 59%"
             android:textSize="14sp" />
 
-        <SeekBar
-            android:id="@+id/thresholdSeekBar"
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:max="255"
-            android:progress="150" />
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <SeekBar
+                android:id="@+id/thresholdSeekBar"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:max="100"
+                android:progress="59" />
+
+            <Button
+                android:id="@+id/autoThresholdButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Auto" />
+        </LinearLayout>
 
         <Button
             android:id="@+id/printButton"

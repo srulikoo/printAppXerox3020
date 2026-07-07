@@ -42,6 +42,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var scaleModeGroup: RadioGroup
     private lateinit var orientationGroup: RadioGroup
     private lateinit var thresholdSeekBar: SeekBar
+    private lateinit var thresholdLabel: TextView
     private lateinit var statusText: TextView
     private lateinit var connectionStatusText: TextView
     private lateinit var queueContainer: LinearLayout
@@ -68,6 +69,7 @@ class MainActivity : AppCompatActivity() {
         scaleModeGroup = findViewById(R.id.scaleModeGroup)
         orientationGroup = findViewById(R.id.orientationGroup)
         thresholdSeekBar = findViewById(R.id.thresholdSeekBar)
+        thresholdLabel = findViewById(R.id.thresholdLabel)
         statusText = findViewById(R.id.statusText)
         connectionStatusText = findViewById(R.id.connectionStatusText)
         queueContainer = findViewById(R.id.queueContainer)
@@ -93,10 +95,15 @@ class MainActivity : AppCompatActivity() {
             showAboutDialog()
         }
 
+        findViewById<Button>(R.id.autoThresholdButton).setOnClickListener {
+            onAutoThresholdClicked()
+        }
+
         scaleModeGroup.setOnCheckedChangeListener { _, _ -> applyControlsToSelectedItem() }
         orientationGroup.setOnCheckedChangeListener { _, _ -> applyControlsToSelectedItem() }
         thresholdSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                thresholdLabel.text = "Black threshold: $progress%"
                 applyControlsToSelectedItem()
             }
             override fun onStartTrackingTouch(seekBar: SeekBar?) {}
@@ -122,12 +129,13 @@ class MainActivity : AppCompatActivity() {
         val resolver: ContentResolver = contentResolver
         statusText.text = "Loading ${uris.size} file(s)..."
 
-        // New items default to whatever Fit/Orientation/Threshold is
-        // currently showing on screen -- a reasonable starting point the
-        // user can then adjust per-item by tapping it in the queue list.
+        // New items default to whatever Fit/Orientation is currently showing
+        // (a reasonable starting point the user can adjust per-item), but
+        // the threshold is computed per-document via Otsu's method below --
+        // a single flat default doesn't work well across very different
+        // documents (a coloring page vs. a dense form vs. a photo).
         val defaultScaleMode = currentScaleMode()
         val defaultOrientation = currentOrientation()
-        val defaultThreshold = thresholdSeekBar.progress
         val firstNewIndex = queue.size
 
         CoroutineScope(Dispatchers.Main).launch {
@@ -151,8 +159,11 @@ class MainActivity : AppCompatActivity() {
                     }
 
                     if (pages.isNotEmpty()) {
+                        val autoThreshold = withContext(Dispatchers.Default) {
+                            ImageProcessor.computeAutoThreshold(pages[0])
+                        }
                         queue.add(
-                            QueueItem(name, pages, defaultScaleMode, defaultOrientation, defaultThreshold)
+                            QueueItem(name, pages, defaultScaleMode, defaultOrientation, autoThreshold)
                         )
                         loadedCount++
                     } else {
@@ -267,6 +278,11 @@ class MainActivity : AppCompatActivity() {
         if (orientationGroup.checkedRadioButtonId == R.id.radioLandscape)
             Orientation.LANDSCAPE else Orientation.PORTRAIT
 
+    /** The threshold slider shows 0-100%; internally, thresholds are stored
+     *  and used as the raw 0-255 grayscale cutoff ImageProcessor expects. */
+    private fun percentToRaw(percent: Int): Int = ((percent / 100.0) * 255.0).toInt().coerceIn(0, 255)
+    private fun rawToPercent(raw: Int): Int = ((raw / 255.0) * 100.0).toInt().coerceIn(0, 100)
+
     /** Writes the current on-screen control values into whichever queue item
      *  is currently selected, then refreshes the preview to match. Called
      *  whenever the user changes Fit/Fill/Stretch, Portrait/Landscape, or
@@ -276,7 +292,7 @@ class MainActivity : AppCompatActivity() {
         val item = queue.getOrNull(selectedIndex) ?: return
         item.scaleMode = currentScaleMode()
         item.orientation = currentOrientation()
-        item.threshold = thresholdSeekBar.progress
+        item.threshold = percentToRaw(thresholdSeekBar.progress)
         updatePreview()
     }
 
@@ -295,7 +311,25 @@ class MainActivity : AppCompatActivity() {
         orientationGroup.check(
             if (item.orientation == Orientation.LANDSCAPE) R.id.radioLandscape else R.id.radioPortrait
         )
-        thresholdSeekBar.progress = item.threshold
+        val percent = rawToPercent(item.threshold)
+        thresholdSeekBar.progress = percent
+        thresholdLabel.text = "Black threshold: $percent%"
+    }
+
+    /** Re-runs the automatic per-document threshold detection (Otsu's
+     *  method) on the currently selected item's first page and applies it. */
+    private fun onAutoThresholdClicked() {
+        val item = queue.getOrNull(selectedIndex) ?: return
+        val firstPage = item.pages.firstOrNull() ?: return
+
+        CoroutineScope(Dispatchers.Main).launch {
+            val auto = withContext(Dispatchers.Default) {
+                ImageProcessor.computeAutoThreshold(firstPage)
+            }
+            item.threshold = auto
+            loadItemIntoControls(item)
+            updatePreview()
+        }
     }
 
     private fun showAboutDialog() {
