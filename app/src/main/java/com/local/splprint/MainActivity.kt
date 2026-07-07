@@ -27,7 +27,13 @@ import kotlinx.coroutines.withContext
 
 /** One queued document: its display name and its rendered page bitmaps
  *  (a single-item list for images, one entry per page for PDFs). */
-private data class QueueItem(val name: String, val pages: List<Bitmap>)
+private data class QueueItem(
+    val name: String,
+    val pages: List<Bitmap>,
+    var scaleMode: ScaleMode = ScaleMode.FIT,
+    var orientation: Orientation = Orientation.PORTRAIT,
+    var threshold: Int = 150
+)
 
 class MainActivity : AppCompatActivity() {
 
@@ -43,6 +49,7 @@ class MainActivity : AppCompatActivity() {
 
     private val queue: MutableList<QueueItem> = mutableListOf()
     private val recentSent: MutableList<String> = mutableListOf() // newest first, capped at 5
+    private var selectedIndex: Int = 0 // which queue item the controls/preview currently reflect
 
     private val previewPageWidth = 350
     private val previewPageHeight = 495
@@ -86,11 +93,11 @@ class MainActivity : AppCompatActivity() {
             showAboutDialog()
         }
 
-        scaleModeGroup.setOnCheckedChangeListener { _, _ -> updatePreview() }
-        orientationGroup.setOnCheckedChangeListener { _, _ -> updatePreview() }
+        scaleModeGroup.setOnCheckedChangeListener { _, _ -> applyControlsToSelectedItem() }
+        orientationGroup.setOnCheckedChangeListener { _, _ -> applyControlsToSelectedItem() }
         thresholdSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                updatePreview()
+                applyControlsToSelectedItem()
             }
             override fun onStartTrackingTouch(seekBar: SeekBar?) {}
             override fun onStopTrackingTouch(seekBar: SeekBar?) {}
@@ -115,34 +122,68 @@ class MainActivity : AppCompatActivity() {
         val resolver: ContentResolver = contentResolver
         statusText.text = "Loading ${uris.size} file(s)..."
 
+        // New items default to whatever Fit/Orientation/Threshold is
+        // currently showing on screen -- a reasonable starting point the
+        // user can then adjust per-item by tapping it in the queue list.
+        val defaultScaleMode = currentScaleMode()
+        val defaultOrientation = currentOrientation()
+        val defaultThreshold = thresholdSeekBar.progress
+        val firstNewIndex = queue.size
+
         CoroutineScope(Dispatchers.Main).launch {
+            var loadedCount = 0
+            val failedNames = mutableListOf<String>()
+
             for (uri in uris) {
                 val name = displayNameOf(uri)
-                val mimeType = resolver.getType(uri) ?: ""
+                try {
+                    val mimeType = resolver.getType(uri) ?: ""
 
-                val pages = withContext(Dispatchers.Default) {
-                    if (mimeType == "application/pdf") {
-                        PdfProcessor.renderAllPages(this@MainActivity, uri)
-                    } else {
-                        resolver.openInputStream(uri)?.use { stream ->
-                            val bmp = BitmapFactory.decodeStream(stream)
-                            if (bmp != null) listOf(bmp) else emptyList()
-                        } ?: emptyList()
+                    val pages = withContext(Dispatchers.Default) {
+                        if (mimeType == "application/pdf") {
+                            PdfProcessor.renderAllPages(this@MainActivity, uri)
+                        } else {
+                            resolver.openInputStream(uri)?.use { stream ->
+                                val bmp = BitmapFactory.decodeStream(stream)
+                                if (bmp != null) listOf(bmp) else emptyList()
+                            } ?: emptyList()
+                        }
                     }
-                }
 
-                if (pages.isNotEmpty()) {
-                    queue.add(QueueItem(name, pages))
+                    if (pages.isNotEmpty()) {
+                        queue.add(
+                            QueueItem(name, pages, defaultScaleMode, defaultOrientation, defaultThreshold)
+                        )
+                        loadedCount++
+                    } else {
+                        failedNames.add(name)
+                    }
+                } catch (e: Throwable) {
+                    // Catches both Exceptions (bad/corrupt file, permission
+                    // revoked) and Errors (e.g. OutOfMemoryError on a very
+                    // large image) so a failure here always surfaces a
+                    // message instead of silently doing nothing.
+                    failedNames.add("$name (${e::class.simpleName}: ${e.message})")
                 }
             }
 
-            statusText.text = "Queue has ${queue.size} document(s)."
+            if (loadedCount > 0) {
+                selectedIndex = firstNewIndex
+                loadItemIntoControls(queue[selectedIndex])
+            }
+
+            statusText.text = when {
+                failedNames.isEmpty() -> "Queue has ${queue.size} document(s)."
+                loadedCount == 0 -> "Failed to load: ${failedNames.joinToString(", ")}"
+                else -> "Added $loadedCount. Failed: ${failedNames.joinToString(", ")}"
+            }
             refreshQueueUI()
             updatePreview()
         }
     }
 
-    /** Rebuilds the queue list UI: one row per queued document, with a
+    /** Rebuilds the queue list UI: one row per queued document, tappable to
+     *  select it for preview/editing (highlighted when selected), with a
      *  remove ("✕") button per row. */
     private fun refreshQueueUI() {
         queueContainer.removeAllViews()
@@ -154,10 +195,18 @@ class MainActivity : AppCompatActivity() {
                     topMargin = 4
                     bottomMargin = 4
                 }
+                setBackgroundColor(if (index == selectedIndex) Color.parseColor("#332D2A55") else Color.TRANSPARENT)
+                setOnClickListener {
+                    selectedIndex = index
+                    loadItemIntoControls(item)
+                    refreshQueueUI()
+                    updatePreview()
+                }
             }
             val label = TextView(this).apply {
                 val pageSuffix = if (item.pages.size > 1) " (${item.pages.size} pages)" else ""
-                text = "${index + 1}. ${item.name}$pageSuffix"
+                val marker = if (index == selectedIndex) "\u25B6 " else ""
+                text = "$marker${index + 1}. ${item.name}$pageSuffix"
                 textSize = 13f
                 layoutParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)
             }
@@ -166,6 +215,7 @@ class MainActivity : AppCompatActivity() {
                 textSize = 11f
                 setOnClickListener {
                     queue.removeAt(index)
+                    if (selectedIndex >= queue.size) selectedIndex = (queue.size - 1).coerceAtLeast(0)
                     refreshQueueUI()
                     updatePreview()
                 }
@@ -184,25 +234,25 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Preview shows the next document in the queue (the one about to print),
-     * in its natural orientation (composeContent only -- no physical-page
-     * rotation), so a landscape selection shows correctly-oriented wide
-     * content on screen rather than the printer's rotated portrait layout.
+     * Renders a preview of the currently selected queue item's first page,
+     * using that item's own stored scale mode/orientation/threshold (not a
+     * shared global setting), in its natural orientation (composeContent
+     * only -- no physical-page rotation), so a landscape selection shows
+     * correctly-oriented wide content on screen rather than the printer's
+     * rotated portrait layout.
      */
     private fun updatePreview() {
-        val firstPage = queue.firstOrNull()?.pages?.firstOrNull()
-        if (firstPage == null) {
+        val item = queue.getOrNull(selectedIndex)
+        val firstPage = item?.pages?.firstOrNull()
+        if (item == null || firstPage == null) {
             previewImage.setImageBitmap(null)
             return
         }
-        val scaleMode = currentScaleMode()
-        val orientation = currentOrientation()
-        val threshold = thresholdSeekBar.progress
 
         val composed = ImageProcessor.composeContent(
-            firstPage, previewPageWidth, previewPageHeight, scaleMode, orientation
+            firstPage, previewPageWidth, previewPageHeight, item.scaleMode, item.orientation
         )
-        val thresholded = ImageProcessor.applyThresholdPreview(composed, threshold)
+        val thresholded = ImageProcessor.applyThresholdPreview(composed, item.threshold)
         composed.recycle()
         previewImage.setImageBitmap(thresholded)
     }
@@ -216,6 +266,37 @@ class MainActivity : AppCompatActivity() {
     private fun currentOrientation(): Orientation =
         if (orientationGroup.checkedRadioButtonId == R.id.radioLandscape)
             Orientation.LANDSCAPE else Orientation.PORTRAIT
+
+    /** Writes the current on-screen control values into whichever queue item
+     *  is currently selected, then refreshes the preview to match. Called
+     *  whenever the user changes Fit/Fill/Stretch, Portrait/Landscape, or
+     *  the threshold slider -- so each document remembers its own settings
+     *  instead of one shared global setting applying to everything. */
+    private fun applyControlsToSelectedItem() {
+        val item = queue.getOrNull(selectedIndex) ?: return
+        item.scaleMode = currentScaleMode()
+        item.orientation = currentOrientation()
+        item.threshold = thresholdSeekBar.progress
+        updatePreview()
+    }
+
+    /** Loads a queue item's stored settings into the on-screen controls
+     *  (without re-triggering a write back into a *different* item -- this
+     *  is called right after selectedIndex is updated, so any listener
+     *  callbacks it fires just write the same values back into the newly
+     *  selected item, which is harmless). */
+    private fun loadItemIntoControls(item: QueueItem) {
+        val scaleId = when (item.scaleMode) {
+            ScaleMode.FILL -> R.id.radioFill
+            ScaleMode.STRETCH -> R.id.radioStretch
+            ScaleMode.FIT -> R.id.radioFit
+        }
+        scaleModeGroup.check(scaleId)
+        orientationGroup.check(
+            if (item.orientation == Orientation.LANDSCAPE) R.id.radioLandscape else R.id.radioPortrait
+        )
+        thresholdSeekBar.progress = item.threshold
+    }
 
     private fun showAboutDialog() {
         val versionName = try {
@@ -330,10 +411,6 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        val scaleMode = currentScaleMode()
-        val orientation = currentOrientation()
-        val threshold = thresholdSeekBar.progress
-
         CoroutineScope(Dispatchers.Main).launch {
             var docIndex = 0
             try {
@@ -356,7 +433,7 @@ class MainActivity : AppCompatActivity() {
                             val widthPx = QpdlEncoder.requiredWidthPx(paperName, highRes)
                             val heightPx = QpdlEncoder.requiredHeightPx(paperName)
                             val packed = ImageProcessor.renderToPackedBitmap(
-                                page, widthPx, heightPx, scaleMode, threshold, orientation
+                                page, widthPx, heightPx, item.scaleMode, item.threshold, item.orientation
                             )
                             QpdlEncoder.encode(
                                 packed, widthPx, heightPx, paperName,
@@ -372,6 +449,7 @@ class MainActivity : AppCompatActivity() {
                     // Whole document sent successfully: remove from the
                     // active queue and record it as recently sent.
                     queue.removeAt(0)
+                    if (selectedIndex >= queue.size) selectedIndex = (queue.size - 1).coerceAtLeast(0)
                     recentSent.add(0, item.name)
                     while (recentSent.size > 5) recentSent.removeAt(recentSent.size - 1)
                     refreshQueueUI()
@@ -380,8 +458,8 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 statusText.text = "Queue complete. All documents sent."
-            } catch (e: Exception) {
-                statusText.text = "Failed on document $docIndex: ${e.message}"
+            } catch (e: Throwable) {
+                statusText.text = "Failed on document $docIndex: ${e::class.simpleName}: ${e.message}"
             }
         }
     }

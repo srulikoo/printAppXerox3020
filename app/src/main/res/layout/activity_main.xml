@@ -12,9 +12,16 @@
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="Xerox Phaser 3020 Printer"
+            android:text="PWP - Print From Phone"
             android:textSize="20sp"
             android:textStyle="bold"
+            android:layout_marginBottom="2dp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Unofficial tool for the Xerox Phaser 3020 (not affiliated with Xerox)"
+            android:textSize="12sp"
             android:layout_marginBottom="4dp" />
 
         <TextView
