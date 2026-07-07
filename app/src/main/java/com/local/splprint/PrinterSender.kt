@@ -32,16 +32,37 @@ object PrinterSender {
      * Opens a raw TCP socket to [ip]:9100, writes [jobBytes], flushes, and
      * closes. Must be called from a background thread (blocking I/O).
      * Throws IOException on any failure.
+     *
+     * Important: write()/flush() only guarantee the data reached this
+     * device's own OS send buffer -- not that it was actually transmitted
+     * over Wi-Fi or received by the printer. Closing the socket immediately
+     * after can send a TCP reset before an embedded printer's (often slow)
+     * network stack has fully drained the data, silently truncating the
+     * job with no error on either side. We explicitly half-close the
+     * connection (shutdownOutput, a proper "no more data" signal) and give
+     * the network stack a brief moment to finish draining before the final
+     * close, instead of closing abruptly right after flush().
      */
     @Throws(IOException::class)
     fun send(ip: String, jobBytes: ByteArray) {
-        Socket().use { socket ->
+        val socket = Socket()
+        try {
             socket.connect(InetSocketAddress(ip, PORT), CONNECT_TIMEOUT_MS)
             socket.soTimeout = READ_TIMEOUT_MS
-            socket.getOutputStream().use { out ->
-                out.write(jobBytes)
-                out.flush()
-            }
+
+            val out = socket.getOutputStream()
+            out.write(jobBytes)
+            out.flush()
+
+            // Proper half-close: signals "no more data" cleanly (TCP FIN)
+            // rather than abruptly resetting the connection.
+            socket.shutdownOutput()
+
+            // Give the printer's network stack time to finish receiving
+            // and processing before we fully close the socket.
+            Thread.sleep(1000)
+        } finally {
+            socket.close()
         }
     }
 }
