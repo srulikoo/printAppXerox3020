@@ -9,6 +9,7 @@ import android.graphics.Rect
 
 enum class ScaleMode { FIT, FILL, STRETCH }
 enum class Orientation { PORTRAIT, LANDSCAPE }
+enum class RenderMode { THRESHOLD, DITHERED }
 
 object ImageProcessor {
 
@@ -225,11 +226,175 @@ object ImageProcessor {
     }
 
     /**
+     * Suggests THRESHOLD or DITHERED for a given source image: THRESHOLD
+     * for content that's already mostly black-or-white (line art, coloring
+     * pages), DITHERED for content with substantial midtone gray (scanned
+     * forms, photos, shaded fills) where a hard cutoff would look blotchy.
+     * Based on what fraction of pixels fall in the broad midtone band.
+     */
+    fun suggestRenderMode(bitmap: Bitmap): RenderMode {
+        val maxDim = 300
+        val scale = maxDim.toFloat() / maxOf(bitmap.width, bitmap.height)
+        val sample = if (scale < 1f) {
+            Bitmap.createScaledBitmap(
+                bitmap, (bitmap.width * scale).toInt().coerceAtLeast(1),
+                (bitmap.height * scale).toInt().coerceAtLeast(1), true
+            )
+        } else bitmap
+
+        val w = sample.width
+        val h = sample.height
+        val row = IntArray(w)
+        var midtoneCount = 0
+        val total = w * h
+
+        for (y in 0 until h) {
+            sample.getPixels(row, 0, w, 0, y, w, 1)
+            for (x in 0 until w) {
+                val p = row[x]
+                val r = (p shr 16) and 0xFF
+                val g = (p shr 8) and 0xFF
+                val b = p and 0xFF
+                val gray = (r * 299 + g * 587 + b * 114) / 1000
+                if (gray in 60..200) midtoneCount++
+            }
+        }
+        if (sample !== bitmap) sample.recycle()
+
+        val midtoneFraction = midtoneCount.toDouble() / total
+        // More than ~8% of pixels sitting in the midtone band suggests real
+        // grayscale content (shading, photos) rather than pure line art.
+        return if (midtoneFraction > 0.08) RenderMode.DITHERED else RenderMode.THRESHOLD
+    }
+
+    /**
+     * Floyd-Steinberg error-diffusion dithering: represents grayscale
+     * content on black/white-only hardware by spreading each pixel's
+     * quantization error into its neighbors, so broad gray areas come out
+     * as a pattern of black/white dots whose density reads as gray, instead
+     * of a hard cutoff producing blotchy noise. Uses a rolling two-row
+     * buffer rather than a full-page float buffer to keep memory bounded on
+     * large pages.
+     */
+    fun ditherToPackedBitmap(page: Bitmap, threshold: Int): ByteArray {
+        val w = page.width
+        val h = page.height
+        val lineBytes = (w + 7) / 8
+        val packed = ByteArray(lineBytes * h)
+        val rowPixels = IntArray(w)
+
+        fun toGray(p: Int): Float {
+            val r = (p shr 16) and 0xFF
+            val g = (p shr 8) and 0xFF
+            val b = p and 0xFF
+            return ((r * 299 + g * 587 + b * 114) / 1000).toFloat()
+        }
+
+        var currentRow = FloatArray(w)
+        var nextRow = FloatArray(w)
+
+        page.getPixels(rowPixels, 0, w, 0, 0, w, 1)
+        for (x in 0 until w) currentRow[x] = toGray(rowPixels[x])
+
+        for (y in 0 until h) {
+            if (y + 1 < h) {
+                page.getPixels(rowPixels, 0, w, 0, y + 1, w, 1)
+                for (x in 0 until w) nextRow[x] = toGray(rowPixels[x])
+            }
+
+            var byteIndex = y * lineBytes
+            var bitMask = 0x80
+            var currentByte = 0
+
+            for (x in 0 until w) {
+                val oldVal = currentRow[x].coerceIn(0f, 255f)
+                val isBlack = oldVal < threshold
+                val newVal = if (isBlack) 0f else 255f
+                if (isBlack) currentByte = currentByte or bitMask
+
+                val err = oldVal - newVal
+                if (x + 1 < w) currentRow[x + 1] += err * 7f / 16f
+                if (y + 1 < h) {
+                    if (x - 1 >= 0) nextRow[x - 1] += err * 3f / 16f
+                    nextRow[x] += err * 5f / 16f
+                    if (x + 1 < w) nextRow[x + 1] += err * 1f / 16f
+                }
+
+                bitMask = bitMask ushr 1
+                if (bitMask == 0) {
+                    packed[byteIndex] = currentByte.toByte()
+                    byteIndex++
+                    bitMask = 0x80
+                    currentByte = 0
+                }
+            }
+            if (bitMask != 0x80) packed[byteIndex] = currentByte.toByte()
+
+            val tmp = currentRow
+            currentRow = nextRow
+            nextRow = tmp
+        }
+        return packed
+    }
+
+    /** Same Floyd-Steinberg algorithm as [ditherToPackedBitmap], but returns
+     *  a black/white ARGB Bitmap for on-screen preview instead of packed
+     *  bytes. */
+    fun applyDitheredPreview(page: Bitmap, threshold: Int): Bitmap {
+        val w = page.width
+        val h = page.height
+        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val rowPixels = IntArray(w)
+        val outRow = IntArray(w)
+
+        fun toGray(p: Int): Float {
+            val r = (p shr 16) and 0xFF
+            val g = (p shr 8) and 0xFF
+            val b = p and 0xFF
+            return ((r * 299 + g * 587 + b * 114) / 1000).toFloat()
+        }
+
+        var currentRow = FloatArray(w)
+        var nextRow = FloatArray(w)
+
+        page.getPixels(rowPixels, 0, w, 0, 0, w, 1)
+        for (x in 0 until w) currentRow[x] = toGray(rowPixels[x])
+
+        for (y in 0 until h) {
+            if (y + 1 < h) {
+                page.getPixels(rowPixels, 0, w, 0, y + 1, w, 1)
+                for (x in 0 until w) nextRow[x] = toGray(rowPixels[x])
+            }
+
+            for (x in 0 until w) {
+                val oldVal = currentRow[x].coerceIn(0f, 255f)
+                val isBlack = oldVal < threshold
+                val newVal = if (isBlack) 0f else 255f
+                outRow[x] = if (isBlack) Color.BLACK else Color.WHITE
+
+                val err = oldVal - newVal
+                if (x + 1 < w) currentRow[x + 1] += err * 7f / 16f
+                if (y + 1 < h) {
+                    if (x - 1 >= 0) nextRow[x - 1] += err * 3f / 16f
+                    nextRow[x] += err * 5f / 16f
+                    if (x + 1 < w) nextRow[x + 1] += err * 1f / 16f
+                }
+            }
+            out.setPixels(outRow, 0, w, 0, y, w, 1)
+
+            val tmp = currentRow
+            currentRow = nextRow
+            nextRow = tmp
+        }
+        return out
+    }
+
+    /**
      * Full print pipeline: compose in natural orientation, rotate to fit the
-     * printer's physical page if needed, threshold, and pack. Used only for
-     * the actual print job -- the preview uses composeContent() directly
-     * (see MainActivity.updatePreview) so it never shows the physical-page
-     * rotation, only the correctly-oriented content.
+     * printer's physical page if needed, threshold/dither, and pack. Used
+     * only for the actual print job -- the preview uses composeContent()
+     * directly (see MainActivity.updatePreview) so it never shows the
+     * physical-page rotation, only the correctly-oriented content.
      */
     fun renderToPackedBitmap(
         source: Bitmap,
@@ -237,12 +402,16 @@ object ImageProcessor {
         pageHeightPx: Int,
         scaleMode: ScaleMode,
         threshold: Int = 150,
-        orientation: Orientation = Orientation.PORTRAIT
+        orientation: Orientation = Orientation.PORTRAIT,
+        renderMode: RenderMode = RenderMode.THRESHOLD
     ): ByteArray {
         val natural = composeContent(source, pageWidthPx, pageHeightPx, scaleMode, orientation)
         val page = rotateForPrinterPage(natural, pageWidthPx, pageHeightPx, orientation)
         if (page !== natural) natural.recycle()
-        val packed = packBitmap(page, threshold)
+        val packed = if (renderMode == RenderMode.DITHERED)
+            ditherToPackedBitmap(page, threshold)
+        else
+            packBitmap(page, threshold)
         page.recycle()
         return packed
     }

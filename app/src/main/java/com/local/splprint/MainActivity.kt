@@ -23,6 +23,7 @@ import androidx.appcompat.app.AppCompatActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 
 /** One queued document: its display name and its rendered page bitmaps
@@ -32,7 +33,8 @@ private data class QueueItem(
     val pages: List<Bitmap>,
     var scaleMode: ScaleMode = ScaleMode.FIT,
     var orientation: Orientation = Orientation.PORTRAIT,
-    var threshold: Int = 150
+    var threshold: Int = 150,
+    var renderMode: RenderMode = RenderMode.THRESHOLD
 )
 
 class MainActivity : AppCompatActivity() {
@@ -41,6 +43,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var previewImage: ImageView
     private lateinit var scaleModeGroup: RadioGroup
     private lateinit var orientationGroup: RadioGroup
+    private lateinit var renderModeGroup: RadioGroup
     private lateinit var thresholdSeekBar: SeekBar
     private lateinit var thresholdLabel: TextView
     private lateinit var statusText: TextView
@@ -68,6 +71,7 @@ class MainActivity : AppCompatActivity() {
         previewImage = findViewById(R.id.previewImage)
         scaleModeGroup = findViewById(R.id.scaleModeGroup)
         orientationGroup = findViewById(R.id.orientationGroup)
+        renderModeGroup = findViewById(R.id.renderModeGroup)
         thresholdSeekBar = findViewById(R.id.thresholdSeekBar)
         thresholdLabel = findViewById(R.id.thresholdLabel)
         statusText = findViewById(R.id.statusText)
@@ -101,6 +105,7 @@ class MainActivity : AppCompatActivity() {
 
         scaleModeGroup.setOnCheckedChangeListener { _, _ -> applyControlsToSelectedItem() }
         orientationGroup.setOnCheckedChangeListener { _, _ -> applyControlsToSelectedItem() }
+        renderModeGroup.setOnCheckedChangeListener { _, _ -> applyControlsToSelectedItem() }
         thresholdSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                 thresholdLabel.text = "Black threshold: $progress%"
@@ -125,6 +130,66 @@ class MainActivity : AppCompatActivity() {
         return name ?: uri.lastPathSegment ?: "file"
     }
 
+    /**
+     * Shows a dialog like a standard print dialog's page-range picker:
+     * prefilled with "all pages", editable to a custom range such as
+     * "1-3,5,7-8". Returns the chosen 0-based page indices, or an empty
+     * list if the user cancels. Suspends until the user responds.
+     */
+    private suspend fun promptPageRange(docName: String, pageCount: Int): List<Int> =
+        suspendCancellableCoroutine { cont ->
+            val input = EditText(this).apply {
+                setText("1-$pageCount")
+                hint = "e.g. 1-3,5,7-8"
+                setPadding(48, 32, 48, 16)
+            }
+
+            val dialog = AlertDialog.Builder(this)
+                .setTitle("Pages to print")
+                .setMessage("\"$docName\" has $pageCount pages. Edit the range below, or leave it as-is for all pages.")
+                .setView(input)
+                .setPositiveButton("Add to Queue") { _, _ ->
+                    val chosen = parsePageRange(input.text.toString(), pageCount)
+                    cont.resume(chosen.ifEmpty { (0 until pageCount).toList() })
+                }
+                .setNegativeButton("Skip this file") { _, _ ->
+                    cont.resume(emptyList())
+                }
+                .setCancelable(false)
+                .create()
+
+            cont.invokeOnCancellation { dialog.dismiss() }
+            dialog.show()
+        }
+
+    /**
+     * Parses a page-range string like "1-3,5,7-8" (1-based, as shown to the
+     * user) into a sorted list of 0-based page indices, clamped to valid
+     * pages. Invalid/out-of-range tokens are simply ignored rather than
+     * failing the whole parse.
+     */
+    private fun parsePageRange(text: String, pageCount: Int): List<Int> {
+        val result = sortedSetOf<Int>()
+        for (rawPart in text.split(",")) {
+            val part = rawPart.trim()
+            if (part.isEmpty()) continue
+            if (part.contains("-")) {
+                val bounds = part.split("-")
+                if (bounds.size == 2) {
+                    val start = bounds[0].trim().toIntOrNull()
+                    val end = bounds[1].trim().toIntOrNull()
+                    if (start != null && end != null) {
+                        for (p in start..end) if (p in 1..pageCount) result.add(p - 1)
+                    }
+                }
+            } else {
+                val p = part.toIntOrNull()
+                if (p != null && p in 1..pageCount) result.add(p - 1)
+            }
+        }
+        return result.toList()
+    }
+
     private fun loadSelectedFiles(uris: List<Uri>) {
         val resolver: ContentResolver = contentResolver
         statusText.text = "Loading ${uris.size} file(s)..."
@@ -140,6 +205,7 @@ class MainActivity : AppCompatActivity() {
 
         CoroutineScope(Dispatchers.Main).launch {
             var loadedCount = 0
+            var cancelledCount = 0
             val failedNames = mutableListOf<String>()
 
             for (uri in uris) {
@@ -147,23 +213,52 @@ class MainActivity : AppCompatActivity() {
                 try {
                     val mimeType = resolver.getType(uri) ?: ""
 
-                    val pages = withContext(Dispatchers.Default) {
-                        if (mimeType == "application/pdf") {
-                            PdfProcessor.renderAllPages(this@MainActivity, uri)
-                        } else {
-                            resolver.openInputStream(uri)?.use { stream ->
-                                val bmp = BitmapFactory.decodeStream(stream)
-                                if (bmp != null) listOf(bmp) else emptyList()
-                            } ?: emptyList()
+                    val pages: List<Bitmap>
+                    var pageLabel = ""
+
+                    if (mimeType == "application/pdf") {
+                        val pageCount = withContext(Dispatchers.Default) {
+                            PdfProcessor.getPageCount(this@MainActivity, uri)
                         }
+                        if (pageCount <= 0) {
+                            failedNames.add(name)
+                            continue
+                        }
+                        val chosenIndices = if (pageCount > 1) {
+                            promptPageRange(name, pageCount)
+                        } else {
+                            listOf(0)
+                        }
+                        if (chosenIndices.isEmpty()) {
+                            cancelledCount++
+                            continue
+                        }
+                        pages = withContext(Dispatchers.Default) {
+                            PdfProcessor.renderPages(this@MainActivity, uri, chosenIndices)
+                        }
+                        if (chosenIndices.size < pageCount) {
+                            val humanPages = chosenIndices.joinToString(",") { (it + 1).toString() }
+                            pageLabel = " (pages $humanPages of $pageCount)"
+                        }
+                    } else {
+                        pages = resolver.openInputStream(uri)?.use { stream ->
+                            val bmp = BitmapFactory.decodeStream(stream)
+                            if (bmp != null) listOf(bmp) else emptyList()
+                        } ?: emptyList()
                     }
 
                     if (pages.isNotEmpty()) {
                         val autoThreshold = withContext(Dispatchers.Default) {
                             ImageProcessor.computeAutoThreshold(pages[0])
                         }
+                        val autoRenderMode = withContext(Dispatchers.Default) {
+                            ImageProcessor.suggestRenderMode(pages[0])
+                        }
                         queue.add(
-                            QueueItem(name, pages, defaultScaleMode, defaultOrientation, autoThreshold)
+                            QueueItem(
+                                name + pageLabel, pages, defaultScaleMode, defaultOrientation,
+                                autoThreshold, autoRenderMode
+                            )
                         )
                         loadedCount++
                     } else {
@@ -183,10 +278,11 @@ class MainActivity : AppCompatActivity() {
                 loadItemIntoControls(queue[selectedIndex])
             }
 
+            val cancelledSuffix = if (cancelledCount > 0) " ($cancelledCount cancelled)" else ""
             statusText.text = when {
-                failedNames.isEmpty() -> "Queue has ${queue.size} document(s)."
-                loadedCount == 0 -> "Failed to load: ${failedNames.joinToString(", ")}"
-                else -> "Added $loadedCount. Failed: ${failedNames.joinToString(", ")}"
+                failedNames.isEmpty() -> "Queue has ${queue.size} document(s).$cancelledSuffix"
+                loadedCount == 0 -> "Failed to load: ${failedNames.joinToString(", ")}$cancelledSuffix"
+                else -> "Added $loadedCount. Failed: ${failedNames.joinToString(", ")}$cancelledSuffix"
             }
             refreshQueueUI()
             updatePreview()
@@ -263,7 +359,10 @@ class MainActivity : AppCompatActivity() {
         val composed = ImageProcessor.composeContent(
             firstPage, previewPageWidth, previewPageHeight, item.scaleMode, item.orientation
         )
-        val thresholded = ImageProcessor.applyThresholdPreview(composed, item.threshold)
+        val thresholded = if (item.renderMode == RenderMode.DITHERED)
+            ImageProcessor.applyDitheredPreview(composed, item.threshold)
+        else
+            ImageProcessor.applyThresholdPreview(composed, item.threshold)
         composed.recycle()
         previewImage.setImageBitmap(thresholded)
     }
@@ -278,6 +377,10 @@ class MainActivity : AppCompatActivity() {
         if (orientationGroup.checkedRadioButtonId == R.id.radioLandscape)
             Orientation.LANDSCAPE else Orientation.PORTRAIT
 
+    private fun currentRenderMode(): RenderMode =
+        if (renderModeGroup.checkedRadioButtonId == R.id.radioDithered)
+            RenderMode.DITHERED else RenderMode.THRESHOLD
+
     /** The threshold slider shows 0-100%; internally, thresholds are stored
      *  and used as the raw 0-255 grayscale cutoff ImageProcessor expects. */
     private fun percentToRaw(percent: Int): Int = ((percent / 100.0) * 255.0).toInt().coerceIn(0, 255)
@@ -285,13 +388,15 @@ class MainActivity : AppCompatActivity() {
 
     /** Writes the current on-screen control values into whichever queue item
      *  is currently selected, then refreshes the preview to match. Called
-     *  whenever the user changes Fit/Fill/Stretch, Portrait/Landscape, or
-     *  the threshold slider -- so each document remembers its own settings
-     *  instead of one shared global setting applying to everything. */
+     *  whenever the user changes Fit/Fill/Stretch, Portrait/Landscape,
+     *  Threshold/Dithered, or the threshold slider -- so each document
+     *  remembers its own settings instead of one shared global setting
+     *  applying to everything. */
     private fun applyControlsToSelectedItem() {
         val item = queue.getOrNull(selectedIndex) ?: return
         item.scaleMode = currentScaleMode()
         item.orientation = currentOrientation()
+        item.renderMode = currentRenderMode()
         item.threshold = percentToRaw(thresholdSeekBar.progress)
         updatePreview()
     }
@@ -311,6 +416,9 @@ class MainActivity : AppCompatActivity() {
         orientationGroup.check(
             if (item.orientation == Orientation.LANDSCAPE) R.id.radioLandscape else R.id.radioPortrait
         )
+        renderModeGroup.check(
+            if (item.renderMode == RenderMode.DITHERED) R.id.radioDithered else R.id.radioThreshold
+        )
         val percent = rawToPercent(item.threshold)
         thresholdSeekBar.progress = percent
         thresholdLabel.text = "Black threshold: $percent%"
@@ -326,7 +434,11 @@ class MainActivity : AppCompatActivity() {
             val auto = withContext(Dispatchers.Default) {
                 ImageProcessor.computeAutoThreshold(firstPage)
             }
+            val autoMode = withContext(Dispatchers.Default) {
+                ImageProcessor.suggestRenderMode(firstPage)
+            }
             item.threshold = auto
+            item.renderMode = autoMode
             loadItemIntoControls(item)
             updatePreview()
         }
@@ -467,7 +579,8 @@ class MainActivity : AppCompatActivity() {
                             val widthPx = QpdlEncoder.requiredWidthPx(paperName, highRes)
                             val heightPx = QpdlEncoder.requiredHeightPx(paperName)
                             val packed = ImageProcessor.renderToPackedBitmap(
-                                page, widthPx, heightPx, item.scaleMode, item.threshold, item.orientation
+                                page, widthPx, heightPx, item.scaleMode, item.threshold,
+                                item.orientation, item.renderMode
                             )
                             QpdlEncoder.encode(
                                 packed, widthPx, heightPx, paperName,

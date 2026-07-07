@@ -111,15 +111,23 @@
             android:text="No documents sent yet."
             android:textSize="13sp" />
 
-        <ImageView
+        <com.local.splprint.ZoomableImageView
             android:id="@+id/previewImage"
             android:layout_width="match_parent"
-            android:layout_height="260dp"
+            android:layout_height="380dp"
             android:layout_marginTop="12dp"
-            android:layout_marginBottom="12dp"
-            android:scaleType="fitCenter"
+            android:layout_marginBottom="4dp"
+            android:scaleType="matrix"
             android:background="#EEEEEE"
             android:contentDescription="Selected image preview" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="8dp"
+            android:text="Pinch to zoom, drag to pan, double-tap to reset"
+            android:textSize="11sp"
+            android:textStyle="italic" />
 
         <TextView
             android:layout_width="wrap_content"
@@ -184,6 +192,35 @@
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
                 android:text="Landscape" />
+        </RadioGroup>
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Rendering"
+            android:textSize="14sp" />
+
+        <RadioGroup
+            android:id="@+id/renderModeGroup"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginBottom="8dp">
+
+            <RadioButton
+                android:id="@+id/radioThreshold"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Threshold (line art)"
+                android:checked="true" />
+
+            <RadioButton
+                android:id="@+id/radioDithered"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Dithered (photos/forms)" />
         </RadioGroup>
 
         <TextView
