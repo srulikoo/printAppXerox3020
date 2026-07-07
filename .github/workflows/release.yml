@@ -1,0 +1,53 @@
+name: Build Release APK
+
+# This workflow ONLY runs when you push a tag like "v1.0" or "v2.3" --
+# ordinary commits to main never trigger it. That keeps releases fully
+# under your control: test via the regular build.yml artifact first,
+# and only create a tag once you're happy with a specific commit.
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # needed to create the GitHub Release
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install NDK and CMake
+        run: |
+          sdkmanager --install "ndk;26.3.11579264" "cmake;3.22.1" "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.7
+
+      - name: Build debug APK
+        run: gradle assembleDebug --no-daemon --stacktrace
+
+      - name: Rename APK with version tag
+        run: |
+          mkdir -p release-out
+          cp app/build/outputs/apk/debug/app-debug.apk "release-out/spl-print-${{ github.ref_name }}.apk"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-out/*.apk
+          name: "${{ github.ref_name }}"
+          generate_release_notes: true
