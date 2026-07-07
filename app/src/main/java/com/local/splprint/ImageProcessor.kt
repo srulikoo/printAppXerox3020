@@ -13,17 +13,15 @@ enum class Orientation { PORTRAIT, LANDSCAPE }
 object ImageProcessor {
 
     /**
-     * Composes [source] onto a white page of exactly [pageWidthPx] x
-     * [pageHeightPx] using [scaleMode] and [orientation]. This is the exact
-     * layout logic used for both the on-screen preview and the actual print
-     * job, so what you see in the preview matches what gets printed.
-     *
-     * For landscape, the image is composed into a swapped-dimension canvas
-     * and then the whole page is rotated 90 degrees to fit the physical
-     * (always-portrait) page size -- the printer itself is never told about
-     * orientation, only the content is rotated.
+     * Composes [source] into its "natural" orientation canvas: for portrait,
+     * a pageWidthPx x pageHeightPx canvas; for landscape, a *wide* canvas
+     * (pageHeightPx x pageWidthPx) with the content sitting upright and
+     * correctly oriented -- exactly how you'd expect a landscape image to
+     * look on screen. This is what the on-screen preview should show
+     * directly; it is NOT yet rotated to fit the printer's fixed (portrait)
+     * paper feed. For that, see [rotateForPrinterPage].
      */
-    fun composePage(
+    fun composeContent(
         source: Bitmap,
         pageWidthPx: Int,
         pageHeightPx: Int,
@@ -60,19 +58,32 @@ object ImageProcessor {
         }
         val paint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
         composeCanvas.drawBitmap(source, null, dstRect, paint)
-
-        if (orientation == Orientation.LANDSCAPE) {
-            val page = Bitmap.createBitmap(pageWidthPx, pageHeightPx, Bitmap.Config.ARGB_8888)
-            val rotateCanvas = Canvas(page)
-            rotateCanvas.drawColor(Color.WHITE)
-            val matrix = Matrix()
-            matrix.postRotate(90f)
-            matrix.postTranslate(pageWidthPx.toFloat(), 0f)
-            rotateCanvas.drawBitmap(composed, matrix, paint)
-            composed.recycle()
-            return page
-        }
         return composed
+    }
+
+    /**
+     * Takes a "natural orientation" bitmap from [composeContent] and, only
+     * for landscape, rotates it 90 degrees to fit the printer's physical
+     * (always-portrait) page. Portrait input is returned unchanged. This
+     * step is for the actual print job only -- never applied to the preview.
+     */
+    fun rotateForPrinterPage(
+        natural: Bitmap,
+        pageWidthPx: Int,
+        pageHeightPx: Int,
+        orientation: Orientation
+    ): Bitmap {
+        if (orientation != Orientation.LANDSCAPE) return natural
+
+        val page = Bitmap.createBitmap(pageWidthPx, pageHeightPx, Bitmap.Config.ARGB_8888)
+        val rotateCanvas = Canvas(page)
+        rotateCanvas.drawColor(Color.WHITE)
+        val paint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
+        val matrix = Matrix()
+        matrix.postRotate(-90f)
+        matrix.postTranslate(0f, pageHeightPx.toFloat())
+        rotateCanvas.drawBitmap(natural, matrix, paint)
+        return page
     }
 
     /**
@@ -141,8 +152,11 @@ object ImageProcessor {
     }
 
     /**
-     * Convenience one-shot used by the print pipeline: compose + threshold +
-     * pack in a single call.
+     * Full print pipeline: compose in natural orientation, rotate to fit the
+     * printer's physical page if needed, threshold, and pack. Used only for
+     * the actual print job -- the preview uses composeContent() directly
+     * (see MainActivity.updatePreview) so it never shows the physical-page
+     * rotation, only the correctly-oriented content.
      */
     fun renderToPackedBitmap(
         source: Bitmap,
@@ -152,7 +166,9 @@ object ImageProcessor {
         threshold: Int = 150,
         orientation: Orientation = Orientation.PORTRAIT
     ): ByteArray {
-        val page = composePage(source, pageWidthPx, pageHeightPx, scaleMode, orientation)
+        val natural = composeContent(source, pageWidthPx, pageHeightPx, scaleMode, orientation)
+        val page = rotateForPrinterPage(natural, pageWidthPx, pageHeightPx, orientation)
+        if (page !== natural) natural.recycle()
         val packed = packBitmap(page, threshold)
         page.recycle()
         return packed

@@ -14,13 +14,13 @@ object PrinterSender {
     /**
      * Quick, non-destructive reachability test: opens a TCP connection to
      * [ip]:9100 and immediately closes it without sending any data. Returns
-     * true if the printer accepted the connection within [CHECK_TIMEOUT_MS].
+     * true if the printer accepted the connection within [timeoutMs].
      * Must be called from a background thread (blocking I/O).
      */
-    fun checkConnection(ip: String): Boolean {
+    fun checkConnection(ip: String, timeoutMs: Int = CHECK_TIMEOUT_MS): Boolean {
         return try {
             Socket().use { socket ->
-                socket.connect(InetSocketAddress(ip, PORT), CHECK_TIMEOUT_MS)
+                socket.connect(InetSocketAddress(ip, PORT), timeoutMs)
             }
             true
         } catch (e: IOException) {
