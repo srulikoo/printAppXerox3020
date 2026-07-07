@@ -15,6 +15,15 @@
             android:text="Xerox Phaser 3020 Printer"
             android:textSize="20sp"
             android:textStyle="bold"
+            android:layout_marginBottom="4dp" />
+
+        <TextView
+            android:id="@+id/aboutLink"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="About this app"
+            android:textColor="#8A80FF"
+            android:textSize="14sp"
             android:layout_marginBottom="16dp" />
 
         <TextView

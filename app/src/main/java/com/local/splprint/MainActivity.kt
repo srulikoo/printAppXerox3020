@@ -2,6 +2,7 @@ package com.local.splprint
 
 import android.app.AlertDialog
 import android.content.ContentResolver
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
@@ -79,6 +80,10 @@ class MainActivity : AppCompatActivity() {
 
         findViewById<Button>(R.id.scanNetworkButton).setOnClickListener {
             onScanNetworkClicked()
+        }
+
+        findViewById<TextView>(R.id.aboutLink).setOnClickListener {
+            showAboutDialog()
         }
 
         scaleModeGroup.setOnCheckedChangeListener { _, _ -> updatePreview() }
@@ -211,6 +216,42 @@ class MainActivity : AppCompatActivity() {
     private fun currentOrientation(): Orientation =
         if (orientationGroup.checkedRadioButtonId == R.id.radioLandscape)
             Orientation.LANDSCAPE else Orientation.PORTRAIT
+
+    private fun showAboutDialog() {
+        val versionName = try {
+            packageManager.getPackageInfo(packageName, 0).versionName
+        } catch (e: Exception) {
+            null
+        }
+        val versionLine = if (versionName != null) "Version $versionName\n\n" else ""
+
+        val message = versionLine +
+            "The Xerox Phaser 3020 is a budget, host-based (\"GDI\") laser " +
+            "printer with no rendering engine of its own -- it speaks only its " +
+            "own proprietary SPL/QPDL protocol, not standard PDF/raster or a " +
+            "working IPP/AirPrint pipeline. Xerox's own app has no print " +
+            "function for this model, and Android's built-in print framework " +
+            "fails outright (\"Printer blocked\").\n\n" +
+            "This app talks to the printer's real protocol directly from your " +
+            "phone -- no PC, no CUPS, no ads -- using a native encoder ported " +
+            "from the open-source OpenPrinting/SpliX driver.\n\n" +
+            "Features: image and PDF printing, multi-document queue, live " +
+            "preview, Fit/Fill/Stretch scaling, Portrait/Landscape, adjustable " +
+            "black threshold, connection check, and local network scanning."
+
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.app_name))
+            .setMessage(message)
+            .setPositiveButton("View on GitHub") { _, _ ->
+                val intent = Intent(
+                    Intent.ACTION_VIEW,
+                    Uri.parse("https://github.com/srulikoo/printAppXerox3020")
+                )
+                startActivity(intent)
+            }
+            .setNegativeButton("Close", null)
+            .show()
+    }
 
     private fun onScanNetworkClicked() {
         connectionStatusText.text = "Scanning..."

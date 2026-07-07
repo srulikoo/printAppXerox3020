@@ -1,6 +1,15 @@
 /*
  * qpdl_encoder.cpp
  *
+ * Portions of this file are derived from the OpenPrinting/SpliX CUPS driver:
+ *   Copyright (C) 2006-2008 Aurelien Croc (AP2C)
+ *   Licensed under the GNU General Public License, version 2 (GPLv2 only).
+ *   Original project: https://github.com/OpenPrinting/splix
+ *
+ * This file (the JNI wrapper, page/band assembly glue, and Android-specific
+ * adaptation) is licensed under GPLv2 as well, per the terms of the
+ * original work. See the LICENSE file in this repository.
+ *
  * A standalone Android/JNI port of the QPDL (Quick Page Description Language)
  * job encoder used by Samsung/Xerox "SPL2" host-based mono laser printers,
  * including the Xerox Phaser 3020 (Samsung M2020-series engine).
