@@ -7,6 +7,11 @@ pages) from your phone directly to a Xerox Phaser 3020 (or other Samsung
 SPL2/QPDL host-based mono laser printer) over your local Wi-Fi, bypassing
 Android's print spooler entirely.
 
+*This is an independent, unofficial project and is not affiliated with,
+endorsed by, or sponsored by Xerox Corporation. "Xerox" and "Phaser" are
+trademarks of Xerox Corporation, referenced here solely to describe hardware
+compatibility.*
+
 ## Why this exists
 
 The Xerox Phaser 3020 is a budget, host-based ("GDI") laser printer: it has
