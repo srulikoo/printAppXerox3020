@@ -43,7 +43,7 @@ jobs:
       - name: Rename APK with version tag
         run: |
           mkdir -p release-out
-          cp app/build/outputs/apk/debug/app-debug.apk "release-out/spl-print-${{ github.ref_name }}.apk"
+          cp app/build/outputs/apk/debug/app-debug.apk "release-out/pwp-${{ github.ref_name }}.apk"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
